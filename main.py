@@ -848,7 +848,7 @@ def reset_table(user_id: str):
     con.commit()
 
 # Modify the main section to create tables on startup
-if _name_ == "_main_":
+if __name__ == "_main_":
     con = sqlite3.connect("database.db")
     cur = con.cursor()
     
