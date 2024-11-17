@@ -87,7 +87,7 @@ def konfirmasi_hapus(title, page, selected_index):
     elif confirm_button and confirmation == "Tidak":
         st.rerun()
 
-def login():
+def login(cur, con):
     st.subheader("Login")
     username = st.text_input("Username")
     password = st.text_input("Password", type="password")
@@ -112,7 +112,7 @@ def login():
         else:
             st.error("Username atau password yang anda masukkan salah")
 
-def register():
+def register(cur, con):
     st.subheader("Register")
     new_username = st.text_input("New Username")
     new_password = st.text_input("New Password", type="password")
@@ -149,7 +149,7 @@ def get_inventory_data(user_id):
         st.error(f"Error mengambil data: {str(e)}")
         return []
 
-def inventory():
+def inventory(cur, con):
     # Initialize key state if not exists
     if 'key_locked' not in st.session_state:
         st.session_state['key_locked'] = False
@@ -728,27 +728,37 @@ def file():
                 except Exception as e:
                     st.error(f"Error dalam dekripsi: {str(e)}")
 
+def get_database_connection():
+    """Create and return a new database connection"""
+    return sqlite3.connect("database.db", check_same_thread=False)
+
 def main():
+    # Create a new connection for this thread
+    con = get_database_connection()
+    cur = con.cursor()
+    
     st.sidebar.title("Navigation")
 
     if st.session_state['user'] is None:
-        
         page = st.sidebar.radio("", ["Login", "Register"], 0)
         if page == "Login":
-            login()
+            login(cur, con)  # Pass connection objects
         else:
-            register()
+            register(cur, con)  # Pass connection objects
     else:
         page = st.sidebar.radio("Pilih Menu", ["Inventory", "Gambar", "Enkripsi / Dekripsi File"], 0)
-        logout()
+        logout(cur, con)  # Pass connection objects
 
         if page == "Inventory":
-            inventory()
+            inventory(cur, con)  # Pass connection objects
         elif page == "Gambar":
             gambar()
         elif page == "Enkripsi / Dekripsi File":
             file()
             
+    # Close connection when done
+    con.close()
+
 @st.dialog("Konfirmasi Logout")
 def konfirmasi_logout(title):
     st.write(title)
@@ -765,14 +775,14 @@ def konfirmasi_logout(title):
     elif confirm_button and confirmation == "Tidak":
         st.rerun()
 
-def logout():
+def logout(cur, con):
     col1, col2 = st.sidebar.columns(2)
     col1.button("Logout", key='logout', use_container_width = True)
 
     if st.session_state['logout']:
         konfirmasi_logout("Apakah yakin ingin logout?")
 
-def create_tables():
+def create_tables(cur, con):
     """Create necessary tables if they don't exist"""
     cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
@@ -849,17 +859,13 @@ def reset_table(user_id: str):
 
 # Modify the main section to create tables on startup
 if __name__ == "__main__":
-    con = sqlite3.connect("database.db")
+    # Initialize database tables
+    con = get_database_connection()
     cur = con.cursor()
-    
-    # Create tables if they don't exist
-    create_tables()
+    create_tables(cur, con)
+    con.close()
     
     if 'user' not in st.session_state:
         st.session_state['user'] = None
-  
     
     main()
-
-    if st.session_state['user'] is None:
-        con.close()
