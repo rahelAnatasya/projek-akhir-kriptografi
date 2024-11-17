@@ -192,7 +192,7 @@ def inventory():
     if st.session_state.get('show_reset_dialog', False):
         with st.form("reset_form"):
             st.write("Konfirmasi Reset Tabel")
-            st.warning("⚠ Semua data akan dihapus!")
+            st.warning("⚠️ Semua data akan dihapus!")
             password = st.text_input("Masukkan password untuk konfirmasi", type="password")
             col1, col2 = st.columns(2)
             
@@ -848,7 +848,7 @@ def reset_table(user_id: str):
     con.commit()
 
 # Modify the main section to create tables on startup
-if _name_ == "_main_":
+if __name__ == "__main__":
     con = sqlite3.connect("database.db")
     cur = con.cursor()
     
