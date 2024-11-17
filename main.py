@@ -200,7 +200,7 @@ def inventory(cur, con):
                 if st.form_submit_button("Konfirmasi"):
                     # Verify password
                     hashed_input_password = hashlib.sha256(password.encode()).hexdigest()
-                    cur.execute("SELECT password FROM users WHERE username=?", (st.session_state['user'],))
+                    cur.execute("SELECT password FROM users WHERE id=?", (st.session_state['user'],))
                     stored_password = cur.fetchone()
                     
                     if stored_password and stored_password[0] == hashed_input_password:
