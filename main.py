@@ -14,6 +14,16 @@ from reportlab.lib.pagesizes import letter, inch
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
 import requests
 
+def get_database_connection():
+    if 'db_connection' not in st.session_state:
+        st.session_state.db_connection = sqlite3.connect("database.db", check_same_thread=False)
+    return st.session_state.db_connection
+
+def get_cursor():
+    if 'db_cursor' not in st.session_state:
+        st.session_state.db_cursor = get_database_connection().cursor()
+    return st.session_state.db_cursor
+
 def vigenere_encrypt(text, key): 
     ## Kunci nya meskipun dibuat huruf kecil akan di jadiin kapital
     key = key.upper()
@@ -138,6 +148,7 @@ def register(cur, con):
 def get_inventory_data(user_id):
     """Mengambil data inventory untuk user tertentu"""
     try:
+        cur = get_cursor()
         cur.execute("""
             SELECT row_num, encrypted_data 
             FROM inventory 
@@ -728,63 +739,6 @@ def file():
                 except Exception as e:
                     st.error(f"Error dalam dekripsi: {str(e)}")
 
-def get_database_connection():
-    """Create and return a new database connection"""
-    return sqlite3.connect("database.db", check_same_thread=False)
-
-def main():
-    # Create a new connection for this thread
-    con = get_database_connection()
-    cur = con.cursor()
-    
-    st.sidebar.title("Navigation")
-
-    if st.session_state['user'] is None:
-        page = st.sidebar.radio("", ["Login", "Register"], 0)
-        if page == "Login":
-            login(cur, con)
-        else:
-            register(cur, con)
-    else:
-        page = st.sidebar.radio("Pilih Menu", ["Inventory", "Gambar", "Enkripsi / Dekripsi File"], 0)
-        logout(cur, con)
-
-        if page == "Inventory":
-            inventory(cur, con)
-        elif page == "Gambar":
-            gambar()
-        elif page == "Enkripsi / Dekripsi File":
-            file()
-            
-    # Close connection when done
-    con.close()
-
-@st.dialog("Konfirmasi Logout")
-def konfirmasi_logout(cur, con, title):
-    st.write(title)
-    confirmation = st.radio("Yakin?", ['Tidak', "Yakin"])
-    confirm_button = st.button("Konfirmasi")
-    if confirm_button and confirmation == "Yakin":
-        try:
-            # Remove user from logged_in_users table
-            cur.execute("DELETE FROM logged_in_users WHERE user_id=?", (st.session_state['user'],))
-            con.commit()
-            
-            st.session_state['user'] = None
-            st.session_state['authenticated'] = False
-            st.rerun()
-        except Exception as e:
-            st.error(f"Error during logout: {str(e)}")
-    elif confirm_button and confirmation == "Tidak":
-        st.rerun()
-
-def logout(cur, con):
-    col1, col2 = st.sidebar.columns(2)
-    col1.button("Logout", key='logout', use_container_width = True)
-
-    if st.session_state['logout']:
-        konfirmasi_logout(cur, con, "Apakah yakin ingin logout?")
-
 def create_tables(cur, con):
     """Create necessary tables if they don't exist"""
     cur.execute("""
@@ -860,15 +814,68 @@ def reset_table(user_id: str):
     cur.execute("DELETE FROM table_keys WHERE user_id = ?", (user_id,))
     con.commit()
 
+def main():
+    # Initialize database connection at startup
+    con = get_database_connection()
+    cur = get_cursor()
+    
+    st.sidebar.title("Navigation")
+
+    if st.session_state['user'] is None:
+        page = st.sidebar.radio("", ["Login", "Register"], 0)
+        if page == "Login":
+            login(cur, con)
+        else:
+            register(cur, con)
+    else:
+        page = st.sidebar.radio("Pilih Menu", ["Inventory", "Gambar", "Enkripsi / Dekripsi File"], 0)
+        logout(cur, con)
+
+        if page == "Inventory":
+            inventory(cur, con)
+        elif page == "Gambar":
+            gambar()
+        elif page == "Enkripsi / Dekripsi File":
+            file()
+    
+    # Don't close the connection here anymore
+    # The connection will persist in the session state
+
+@st.dialog("Konfirmasi Logout")
+def konfirmasi_logout(cur, con, title):
+    st.write(title)
+    confirmation = st.radio("Yakin?", ['Tidak', "Yakin"])
+    confirm_button = st.button("Konfirmasi")
+    if confirm_button and confirmation == "Yakin":
+        try:
+            # Remove user from logged_in_users table
+            cur.execute("DELETE FROM logged_in_users WHERE user_id=?", (st.session_state['user'],))
+            con.commit()
+            
+            st.session_state['user'] = None
+            st.session_state['authenticated'] = False
+            st.rerun()
+        except Exception as e:
+            st.error(f"Error during logout: {str(e)}")
+    elif confirm_button and confirmation == "Tidak":
+        st.rerun()
+
+def logout(cur, con):
+    col1, col2 = st.sidebar.columns(2)
+    col1.button("Logout", key='logout', use_container_width = True)
+
+    if st.session_state['logout']:
+        konfirmasi_logout(cur, con, "Apakah yakin ingin logout?")
+
 # Modify the main section to create tables on startup
 if __name__ == "__main__":
-    # Initialize database tables
-    con = get_database_connection()
-    cur = con.cursor()
-    create_tables(cur, con)
-    con.close()
-    
+    # Initialize session state variables
     if 'user' not in st.session_state:
         st.session_state['user'] = None
+    
+    # Initialize database tables
+    con = get_database_connection()
+    cur = get_cursor()
+    create_tables(cur, con)
     
     main()
