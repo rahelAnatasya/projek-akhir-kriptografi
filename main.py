@@ -856,16 +856,8 @@ if __name__ == "__main__":
     create_tables()
     
     if 'user' not in st.session_state:
-        # Check if there's an existing logged in user
-        cur.execute("SELECT user_id FROM logged_in_users LIMIT 1")
-        logged_in_user = cur.fetchone()
-        
-        if logged_in_user:
-            st.session_state['user'] = logged_in_user[0]
-            st.session_state['authenticated'] = True
-        else:
-            st.session_state['user'] = None
-            st.session_state['authenticated'] = False
+        st.session_state['user'] = None
+  
     
     main()
 
