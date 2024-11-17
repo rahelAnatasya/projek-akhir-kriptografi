@@ -742,15 +742,15 @@ def main():
     if st.session_state['user'] is None:
         page = st.sidebar.radio("", ["Login", "Register"], 0)
         if page == "Login":
-            login(cur, con)  # Pass connection objects
+            login(cur, con)
         else:
-            register(cur, con)  # Pass connection objects
+            register(cur, con)
     else:
         page = st.sidebar.radio("Pilih Menu", ["Inventory", "Gambar", "Enkripsi / Dekripsi File"], 0)
-        logout(cur, con)  # Pass connection objects
+        logout(cur, con)
 
         if page == "Inventory":
-            inventory(cur, con)  # Pass connection objects
+            inventory(cur, con)
         elif page == "Gambar":
             gambar()
         elif page == "Enkripsi / Dekripsi File":
@@ -760,18 +760,21 @@ def main():
     con.close()
 
 @st.dialog("Konfirmasi Logout")
-def konfirmasi_logout(title):
+def konfirmasi_logout(cur, con, title):
     st.write(title)
     confirmation = st.radio("Yakin?", ['Tidak', "Yakin"])
     confirm_button = st.button("Konfirmasi")
     if confirm_button and confirmation == "Yakin":
-        # Remove user from logged_in_users table
-        cur.execute("DELETE FROM logged_in_users WHERE user_id=?", (st.session_state['user'],))
-        con.commit()
-        
-        st.session_state['user'] = None
-        st.session_state['authenticated'] = False
-        st.rerun()
+        try:
+            # Remove user from logged_in_users table
+            cur.execute("DELETE FROM logged_in_users WHERE user_id=?", (st.session_state['user'],))
+            con.commit()
+            
+            st.session_state['user'] = None
+            st.session_state['authenticated'] = False
+            st.rerun()
+        except Exception as e:
+            st.error(f"Error during logout: {str(e)}")
     elif confirm_button and confirmation == "Tidak":
         st.rerun()
 
@@ -780,7 +783,7 @@ def logout(cur, con):
     col1.button("Logout", key='logout', use_container_width = True)
 
     if st.session_state['logout']:
-        konfirmasi_logout("Apakah yakin ingin logout?")
+        konfirmasi_logout(cur, con, "Apakah yakin ingin logout?")
 
 def create_tables(cur, con):
     """Create necessary tables if they don't exist"""
