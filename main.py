@@ -9,6 +9,10 @@ import hashlib
 import numpy as np
 from PIL import Image
 import io
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import letter, inch
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
+import requests
 
 def vigenere_encrypt(text, key): 
     ## Kunci nya meskipun dibuat huruf kecil akan di jadiin kapital
@@ -66,6 +70,19 @@ def konfirmasi_hapus(title, page, selected_index):
             st.session_state.messages.pop(selected_index)
         elif page == "Gambar":
             st.session_state.images.pop(selected_index)
+        elif page == "Inventory":
+            # Delete the inventory row
+            cur.execute("DELETE FROM inventory WHERE user_id=? AND row_num=?", 
+                       (st.session_state['user'], selected_index))
+            con.commit()
+            
+            # Update remaining row numbers
+            cur.execute("""
+                UPDATE inventory 
+                SET row_num = row_num - 1 
+                WHERE user_id=? AND row_num > ?
+            """, (st.session_state['user'], selected_index))
+            con.commit()
         st.rerun()
     elif confirm_button and confirmation == "Tidak":
         st.rerun()
@@ -79,8 +96,18 @@ def login():
         cur.execute("SELECT * FROM users WHERE username=? AND password=?", (username, hashed_input_password))
         user = cur.fetchone()
         if user:
+            # Check if user is already logged in
+            cur.execute("SELECT * FROM logged_in_users WHERE user_id=?", (user[0],))
+            existing_session = cur.fetchone()
+            
+            if not existing_session:
+                # Add user to logged_in_users table
+                cur.execute("INSERT INTO logged_in_users (user_id) VALUES (?)", (user[0],))
+                con.commit()
+            
             st.success(f"Welcome {username}")
             st.session_state['user'] = user[0]
+            st.session_state['authenticated'] = True
             st.rerun()
         else:
             st.error("Username atau password yang anda masukkan salah")
@@ -95,114 +122,366 @@ def register():
             hashed_password = hashlib.sha256(new_password.encode()).hexdigest()
             cur.execute("INSERT INTO users (username, password) VALUES (?, ?)", (new_username, hashed_password))
             con.commit()
+            
+            # Get the user ID of the newly created user
+            cur.execute("SELECT id FROM users WHERE username = ?", (new_username,))
+            user_id = cur.fetchone()[0]
+            cur.execute("INSERT INTO logged_in_users (user_id) VALUES (?)", (user_id,))
+            con.commit()
+            
             st.success("Registration successful")
-            st.session_state['user'] = new_username
+            st.session_state['user'] = user_id  # Store the numeric ID instead of username
             st.rerun()
         else:
             st.error("Passwords do not match")
 
-def pesan():
-    if 'messages' not in st.session_state:
-        cur.execute("SELECT title, encrypted_message FROM messages WHERE user_id=?", (st.session_state['user'],))
-        rows = cur.fetchall()
-        st.session_state['messages'] = [{"title": row[0], "text": row[1]} for row in rows]
+def get_inventory_data(user_id):
+    """Mengambil data inventory untuk user tertentu"""
+    try:
+        cur.execute("""
+            SELECT row_num, encrypted_data 
+            FROM inventory 
+            WHERE user_id=? 
+            ORDER BY row_num
+        """, (user_id,))
+        return cur.fetchall()
+    except sqlite3.Error as e:
+        st.error(f"Error mengambil data: {str(e)}")
+        return []
 
-    # Message selection and add new message
-    st.sidebar.subheader("Messages")
-    message_titles = [msg["title"] for msg in st.session_state.messages]
+def inventory():
+    # Initialize key state if not exists
+    if 'key_locked' not in st.session_state:
+        st.session_state['key_locked'] = False
+    if 'encryption_key' not in st.session_state:
+        st.session_state['encryption_key'] = None
+    
+    # Load table data
+    st.session_state['table_data'] = get_inventory_data(st.session_state['user'])
 
-    if len(message_titles) > 0:
-        selected_msg = st.sidebar.radio("Select a message", message_titles, key="selected_msg")
-        
-
-        # Display selected message text
-        selected_index = message_titles.index(selected_msg)
-
-        col1, col2 = st.columns(2)
-        col1.write(st.session_state.messages[selected_index]["title"])
-        if col2.button("Hapus Pesan", use_container_width=True):
-            konfirmasi_hapus("Apakah anda yakin ingin menghapus pesan ini?", page='Pesan', selected_index=selected_index)
-
-        # Encryption/Decryption options
-
-        mode = st.radio("Mode", ["Dekripsi Pesan", "Enkripsi Pesan"])
-
-        if mode == "Enkripsi Pesan":
-
-            st.subheader("Encrypt Message")
-            plaintext = st.text_area("Masukkan pesan yang akan dienkripsi disini", key="encrypt_message", placeholder="Pesan yang akan dienkripsi")
-            key = st.text_input("Masukkan kunci enkripsi", key="encrypt_key")
-            if st.button("Enkripsi Pesan"):
-                if plaintext and key:
-                    st.success("Pesan berhasil dienkripsi, pindah ke mode view untuk mendekripsi!")
-                    st.write("Pesan terenkripsi:")
-                    vigenere_result = vigenere_encrypt(text=plaintext, key=key)
-                    cipher = ARC4.new(key.encode())
-                    encrypted = cipher.encrypt(vigenere_result.encode())
-                    st.session_state.messages[selected_index]["text"] = encrypted.hex()
-                    cur.execute("INSERT INTO messages (user_id, title, encrypted_message) VALUES (?, ?, ?)", 
-                                (st.session_state['user'], st.session_state.messages[selected_index]["title"], encrypted.hex()))
-                    con.commit()
-                    st.write(encrypted.hex())
+    # Key management section
+    st.subheader("Manajemen Kunci")
+    col1, col2, col3 = st.columns([2, 1, 1])
+    
+    with col1:
+        if not st.session_state['key_locked']:
+            key = st.text_input("Masukkan kunci untuk enkripsi/dekripsi", type="password")
+            if st.button("Buka Gembok 🔒"):
+                if key:
+                    # Verify key against stored key
+                    if verify_table_key(st.session_state['user'], key):
+                        st.session_state['encryption_key'] = key
+                        st.session_state['key_locked'] = True
+                        st.rerun()
+                    else:
+                        st.error("Kunci tidak sesuai dengan kunci yang tersimpan")
                 else:
-                    st.error("Pesan dan kunci tidak boleh kosong")
-
+                    st.error("Kunci harus diisi")
         else:
-            st.subheader("Pesan")
-            ciphertext = st.text_area("Berikut adalah isi pesan", value=st.session_state.messages[selected_index]["text"], disabled=True)
-            key = st.text_input("Masukkan kunci enkripsi", key="view_decrypt_key", value="" if st.session_state.get('clear_key', False) else None)
-            if st.button("Dekripsi Pesan"):
-                st.session_state.clear_key = True
-                if len(ciphertext) > 1 and key:
-                    arc4 = ARC4.new(key.encode())
-                    decrypted = arc4.decrypt(bytes.fromhex(ciphertext))
-                    try:
-                        st.success("Pesan berhasil di dekripsi!")
-                        st.write("Pesan:")
-                        pesan_plain = decrypted.decode(errors='replace')
-                        hasil = vigenere_decrypt(text=pesan_plain, key=key)
-
-                        st.write(hasil)
-                    except UnicodeDecodeError:
-                        st.error("Gagal mendekripsi")
-                else:
-                    st.error("Pesan dan kunci tidak boleh kosong")
-
-
-        # Add new message section
-    new_title = st.sidebar.text_input("New message title")
-    if st.sidebar.button("Add Message"):
-        if new_title:
-            if new_title in [msg["title"] for msg in st.session_state.messages]:
-                st.sidebar.error("Judul tidak boleh duplikat")
-            else:
-                st.session_state.messages.append({"title": new_title, "text": ""})
+            st.info(f"Kunci terkunci 🔒")
+            if st.button("Gembok Tabel 🔓"):
+                st.session_state['key_locked'] = False
+                st.session_state['encryption_key'] = None
                 st.rerun()
-        else:
-            st.sidebar.error("Please enter title")
+
+    with col2:
+        if st.button("Reset Tabel"):
+            st.session_state['show_reset_dialog'] = True
+
+    # Reset confirmation dialog
+    if st.session_state.get('show_reset_dialog', False):
+        with st.form("reset_form"):
+            st.write("Konfirmasi Reset Tabel")
+            st.warning("⚠ Semua data akan dihapus!")
+            password = st.text_input("Masukkan password untuk konfirmasi", type="password")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                if st.form_submit_button("Konfirmasi"):
+                    # Verify password
+                    hashed_input_password = hashlib.sha256(password.encode()).hexdigest()
+                    cur.execute("SELECT password FROM users WHERE username=?", (st.session_state['user'],))
+                    stored_password = cur.fetchone()
+                    
+                    if stored_password and stored_password[0] == hashed_input_password:
+                        # Reset table and delete associated key
+                        cur.execute("DELETE FROM inventory WHERE user_id=?", (st.session_state['user'],))
+                        cur.execute("DELETE FROM table_keys WHERE user_id=?", (st.session_state['user'],))  # Delete key from table_keys
+                        con.commit()
+                        st.session_state['key_locked'] = False
+                        st.session_state['encryption_key'] = None
+                        st.session_state['show_reset_dialog'] = False
+                        st.success("Tabel berhasil direset!")
+                        st.rerun()
+                    else:
+                        st.error("Password salah!")
+            
+            with col2:
+                if st.form_submit_button("Batal"):
+                    st.session_state['show_reset_dialog'] = False
+                    st.rerun()
+
+    # Display table
+    st.subheader("Data Inventory")
+    
+    # Table headers
+    col1, col2, col3, col4, col5 = st.columns([1, 2, 2, 2, 1])
+    col1.write("No")
+    col2.write("Nama Barang")
+    col3.write("Jumlah")
+    col4.write("Harga")
+    col5.write("Aksi")
+
+    # Display table data
+    if st.session_state['table_data']:
+        for row in st.session_state['table_data']:
+            col1, col2, col3, col4, col5 = st.columns([1, 2, 2, 2, 1])
+            col1.write(row[0])  # row_num
+            
+            if st.session_state['key_locked']:
+                try:
+                    # Decrypt data
+                    arc4 = ARC4.new(st.session_state['encryption_key'].encode())
+                    decrypted = arc4.decrypt(bytes.fromhex(row[1]))  # row[1] is encrypted_data
+                    decrypted_text = decrypted.decode(errors='replace')
+                    decoded_data = vigenere_decrypt(decrypted_text, st.session_state['encryption_key'])
+                    nama, jumlah, harga = decoded_data.split('|')
+                    
+                    col2.write(nama)
+                    col3.write(jumlah)
+                    col4.write(harga)
+                    
+                    # Delete button only enabled when key is locked
+                    if col5.button("Hapus", key=f"delete_{row[0]}"):
+                        konfirmasi_hapus(
+                            title=f"Hapus baris {row[0]}?",
+                            page="Inventory",
+                            selected_index=row[0]
+                        )
+                except Exception as e:
+                    st.error(f"Gagal mendekripsi data: {str(e)}")
+            else:
+                # Display encrypted data in hex format
+                encrypted_hex = row[1][:10] + "..."  # Show first 10 chars of hex
+                col2.write(encrypted_hex)
+                col3.write(encrypted_hex)
+                col4.write(encrypted_hex)
+                # Disable delete button when key is not locked
+                col5.button("Hapus", key=f"delete_{row[0]}", disabled=True)
+
+    # Add PDF export button after the table display
+    if st.session_state['key_locked'] and st.session_state['table_data']:
+        if st.button("Link PDF"):
+            try:
+                # Create PDF buffer
+                pdf_buffer = io.BytesIO()
+                doc = SimpleDocTemplate(pdf_buffer, pagesize=letter)
+                elements = []
+
+                # Prepare table data
+                table_data = [['No', 'Nama Barang', 'Jumlah', 'Harga']]
+                
+                for row in st.session_state['table_data']:
+                    # Decrypt data
+                    arc4 = ARC4.new(st.session_state['encryption_key'].encode())
+                    decrypted = arc4.decrypt(bytes.fromhex(row[1]))
+                    decrypted_text = decrypted.decode(errors='replace')
+                    decoded_data = vigenere_decrypt(decrypted_text, st.session_state['encryption_key'])
+                    nama, jumlah, harga = decoded_data.split('|')
+                    
+                    table_data.append([str(row[0]), nama, jumlah, harga])
+
+                # Create table
+                table = Table(table_data, colWidths=[0.5*inch, 2*inch, 1*inch, 1*inch])
+                table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, 0), 12),
+                    ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                    ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+                    ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
+                    ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+                    ('FONTSIZE', (0, 1), (-1, -1), 10),
+                    ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ]))
+                
+                # Create PDF with table
+                elements.append(table)
+                doc.build(elements)
+
+                col1, col2 = st.columns(2)
+                with col1:
+                    # Existing PDF download button
+                    st.download_button(
+                        label="Download Inventory PDF",
+                        data=pdf_buffer.getvalue(),
+                        file_name="inventory.pdf",
+                        mime="application/pdf"
+                    )
+                    
+                    # Encrypt PDF for secure download
+                    try:
+                        # Encrypt the PDF buffer using AES
+                        key = hashlib.sha256(st.session_state['encryption_key'].encode()).digest()
+                        iv = get_random_bytes(AES.block_size)
+                        cipher = AES.new(key, AES.MODE_CBC, iv)
+                        
+                        # Pad and encrypt the PDF data
+                        pdf_data = pdf_buffer.getvalue()
+                        encrypted_pdf = cipher.encrypt(pad(pdf_data, AES.block_size))
+                        
+                        # Combine IV and encrypted data
+                        combined_data = base64.b64encode(iv + encrypted_pdf).decode('utf-8')
+                        
+                        # Offer encrypted PDF download
+                        st.download_button(
+                            label="Download Encrypted PDF",
+                            data=combined_data.encode(),
+                            file_name="inventory_encrypted.enc",
+                            mime="application/octet-stream"
+                        )
+                        
+                    except Exception as e:
+                        st.error(f"Error encrypting PDF: {str(e)}")
+                
+                with col2:
+                    try:
+                        # Create chart using matplotlib
+                        import matplotlib.pyplot as plt
+                        
+                        # Extract data for chart
+                        names = []
+                        quantities = []
+                        prices = []
+                        
+                        for row in st.session_state['table_data']:
+                            arc4 = ARC4.new(st.session_state['encryption_key'].encode())
+                            decrypted = arc4.decrypt(bytes.fromhex(row[1]))
+                            decrypted_text = decrypted.decode(errors='replace')
+                            decoded_data = vigenere_decrypt(decrypted_text, st.session_state['encryption_key'])
+                            nama, jumlah, harga = decoded_data.split('|')
+                            
+                            names.append(nama)
+                            quantities.append(float(jumlah))
+                            prices.append(float(harga))
+                        
+                        # Create figure with two subplots
+                        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+                        
+                        # Quantity bar chart
+                        ax1.bar(names, quantities)
+                        ax1.set_title('Jumlah Barang')
+                        ax1.set_xticklabels(names, rotation=45, ha='right')
+                        
+                        # Price bar chart
+                        ax2.bar(names, prices)
+                        ax2.set_title('Harga Barang')
+                        ax2.set_xticklabels(names, rotation=45, ha='right')
+                        
+                        plt.tight_layout()
+                        
+                        # Save chart to buffer
+                        chart_buffer = io.BytesIO()
+                        plt.savefig(chart_buffer, format='png', bbox_inches='tight')
+                        chart_buffer.seek(0)
+                        plt.close()
+                        
+                        # Add download button for chart
+                        st.download_button(
+                            label="Download Chart PNG",
+                            data=chart_buffer,
+                            file_name="inventory_chart.png",
+                            mime="image/png"
+                        )
+                        
+                        # Add encrypted chart using steganography
+                        try:
+                            # Get random host image from Unsplash
+                            response = requests.get("https://unsplash.it/1000/1000")
+                            host_img = Image.open(io.BytesIO(response.content))
+                            
+                            # Convert chart to PIL Image
+                            chart_img = Image.open(chart_buffer)
+                            
+                            # Perform steganography
+                            stego_image = encode_image(host_img, chart_img)
+                            
+                            stego_buffer = io.BytesIO()
+                            stego_image.save(stego_buffer, format='PNG')
+                            stego_buffer.seek(0)
+                            
+                            st.download_button(
+                                label="Download Encrypted Chart (Steganography)",
+                                data=stego_buffer,
+                                file_name="inventory_chart_encrypted.png",
+                                mime="image/png"
+                            )
+                            
+                        except Exception as e:
+                            st.error(f"Error creating encrypted chart: {str(e)}")
+                
+                    except Exception as e:
+                        st.error(f"Error generating chart: {str(e)}")
+                
+            except Exception as e:
+                st.error(f"Error generating PDF: {str(e)}")
+
+    st.subheader("Tambah Barang")
+    if st.session_state['key_locked']:
+        col1, col2, col3, col4 = st.columns(4)
+        nama_barang = col2.text_input("Nama Barang")
+        jumlah = col3.number_input("Jumlah", min_value=0)
+        harga = col4.number_input("Harga", min_value=0.0)
+
+        if st.button("Tambah Barang"):
+            if nama_barang:
+                try:
+                    row_num = len(st.session_state['table_data']) + 1
+                    
+                    data_string = f"{nama_barang}|{jumlah}|{harga}"
+                    
+                    vigenere_result = vigenere_encrypt(text=data_string, key=st.session_state['encryption_key'])
+                    cipher = ARC4.new(st.session_state['encryption_key'].encode())
+                    encrypted = cipher.encrypt(vigenere_result.encode())
+                    encrypted_hex = encrypted.hex()
+
+                    cur.execute("""
+                        INSERT INTO inventory (user_id, row_num, encrypted_data) 
+                        VALUES (?, ?, ?)
+                    """, (st.session_state['user'], row_num, encrypted_hex))
+                    con.commit()
+
+                    st.session_state['table_data'] = get_inventory_data(st.session_state['user'])
+                    st.success("Data berhasil ditambahkan!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Gagal menambahkan data: {str(e)}")
+            else:
+                st.error("Nama barang harus diisi")
+    else:
+        st.warning("Kunci harus dikunci terlebih dahulu untuk menambah data")
 
 
 
 def encode_image(host_image: Image.Image, secret_image: Image.Image) -> Image.Image:
 
-    # Validasi input
     if not isinstance(host_image, Image.Image) or not isinstance(secret_image, Image.Image):
         raise ValueError("Input harus berupa objek PIL Image")
         
-    # Konversi gambar ke mode RGB jika belum
     host_image = host_image.convert('RGB')
     secret_image = secret_image.convert('RGB')
     
-    # Konversi gambar ke array numpy
     host_arr = np.array(host_image, dtype=np.uint8)
     secret_arr = np.array(secret_image, dtype=np.uint8)
     
-    # Hitung kapasitas maksimum host image
     max_bytes = (host_arr.size * 1) // 8  # 1 bit per byte
     if secret_arr.size > max_bytes * 8:
         raise ValueError("Gambar rahasia terlalu besar untuk disembunyikan dalam gambar host")
     
-    # Resize secret image ke ukuran yang sesuai dengan kapasitas host
     new_height = int(np.sqrt(max_bytes / 3))  # 3 untuk RGB channels
     new_width = new_height
     secret_img = secret_image.resize((new_width, new_height))
@@ -453,20 +732,21 @@ def main():
     st.sidebar.title("Navigation")
 
     if st.session_state['user'] is None:
+        
         page = st.sidebar.radio("", ["Login", "Register"], 0)
         if page == "Login":
             login()
         else:
             register()
     else:
-        page = st.sidebar.radio("Pilih Menu", ["Pesan", "Gambar", "File"], 0)
+        page = st.sidebar.radio("Pilih Menu", ["Inventory", "Gambar", "Enkripsi / Dekripsi File"], 0)
         logout()
 
-        if page == "Pesan":
-            pesan()
+        if page == "Inventory":
+            inventory()
         elif page == "Gambar":
             gambar()
-        elif page == "File":
+        elif page == "Enkripsi / Dekripsi File":
             file()
             
 @st.dialog("Konfirmasi Logout")
@@ -475,7 +755,12 @@ def konfirmasi_logout(title):
     confirmation = st.radio("Yakin?", ['Tidak', "Yakin"])
     confirm_button = st.button("Konfirmasi")
     if confirm_button and confirmation == "Yakin":
+        # Remove user from logged_in_users table
+        cur.execute("DELETE FROM logged_in_users WHERE user_id=?", (st.session_state['user'],))
+        con.commit()
+        
         st.session_state['user'] = None
+        st.session_state['authenticated'] = False
         st.rerun()
     elif confirm_button and confirmation == "Tidak":
         st.rerun()
@@ -487,13 +772,101 @@ def logout():
     if st.session_state['logout']:
         konfirmasi_logout("Apakah yakin ingin logout?")
 
-if __name__ == "__main__": #inisiasi awal
-    con = sqlite3.connect("database.db") 
+def create_tables():
+    """Create necessary tables if they don't exist"""
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL
+        )
+    """)
+    
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS inventory (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            row_num INTEGER NOT NULL,
+            encrypted_data TEXT NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+    """)
+    
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS table_keys (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            key_value TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    # Add new table for tracking logged in users with CASCADE
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS logged_in_users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            login_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+    """)
+    con.commit()
+
+def verify_table_key(user_id: str, input_key: str) -> bool:
+    """Verify if the input key matches the stored key for the table"""
+    cur.execute("""
+        SELECT key_value 
+        FROM table_keys 
+        WHERE user_id = ? 
+        ORDER BY created_at DESC 
+        LIMIT 1
+    """, (user_id,))
+    stored_key = cur.fetchone()
+    
+    if not stored_key:
+        # If no key exists, store the new key
+        cur.execute("""
+            INSERT INTO table_keys (user_id, key_value)
+            VALUES (?, ?)
+        """, (user_id, input_key))
+        con.commit()
+        return True
+    
+    # Compare with existing key
+    return stored_key[0] == input_key
+
+def reset_table(user_id: str):
+    """Reset a table and its associated key"""
+    # Delete table data
+    if user_id == 'inventory':
+        cur.execute("DELETE FROM inventory WHERE user_id=?", (st.session_state['user'],))
+    else:
+        cur.execute(f"DELETE FROM {user_id}")
+    
+    # Delete stored keys
+    cur.execute("DELETE FROM table_keys WHERE user_id = ?", (user_id,))
+    con.commit()
+
+# Modify the main section to create tables on startup
+if _name_ == "_main_":
+    con = sqlite3.connect("database.db")
     cur = con.cursor()
     
+    # Create tables if they don't exist
+    create_tables()
+    
     if 'user' not in st.session_state:
-        st.session_state['user'] = None    
+        # Check if there's an existing logged in user
+        cur.execute("SELECT user_id FROM logged_in_users LIMIT 1")
+        logged_in_user = cur.fetchone()
         
+        if logged_in_user:
+            st.session_state['user'] = logged_in_user[0]
+            st.session_state['authenticated'] = True
+        else:
+            st.session_state['user'] = None
+            st.session_state['authenticated'] = False
+    
     main()
 
     if st.session_state['user'] is None:
